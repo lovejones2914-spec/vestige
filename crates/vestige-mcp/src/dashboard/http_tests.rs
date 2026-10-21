@@ -860,3 +860,68 @@ async fn a_dashboard_this_process_asked_for_outlives_leases() {
         "VESTIGE_DASHBOARD_ENABLED's dashboard stopped"
     );
 }
+
+// ---------------------------------------------------------------------------
+// OrcaRouter: the verifier's named provider has one write route, and a
+// hostile page must not reach it. The key itself never comes back.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn orcarouter_state_names_the_provider_without_the_key() {
+    let (_dir, storage) = strata();
+    let app = router(&storage);
+
+    let reply = own(&app, "GET", "/api/orcarouter/state", None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["home"], "https://www.orcarouter.ai");
+    assert_eq!(
+        body["modelsUrl"],
+        "https://api.orcarouter.ai/v1/models?capability=chat"
+    );
+    assert!(body["keyPresent"].is_boolean(), "{body}");
+    assert!(body.get("key").is_none(), "{body}");
+    assert!(!reply.body.contains("sk-orca-"), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn a_cross_site_post_cannot_store_a_verifier_key() {
+    let (_dir, storage) = strata();
+    let app = router(&storage);
+
+    let reply = send(
+        &app,
+        "POST",
+        "/api/orcarouter/key",
+        &[
+            ("host", HOST),
+            ("origin", "https://attacker.example"),
+            ("content-type", "application/json"),
+        ],
+        Some(r#"{"key":"sk-orca-not-a-real-key"}"#),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+}
+
+#[tokio::test]
+async fn a_mistyped_verifier_key_is_refused_by_the_route() {
+    let (_dir, storage) = strata();
+    let app = router(&storage);
+
+    let reply = own(
+        &app,
+        "POST",
+        "/api/orcarouter/key",
+        Some(r#"{"key":"sk-live-not-an-orcarouter-key"}"#),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["code"], "orcarouter_key_invalid", "{body}");
+    assert!(
+        !reply.body.contains("not-an-orcarouter-key"),
+        "{}",
+        reply.body
+    );
+}

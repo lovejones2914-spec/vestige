@@ -24,16 +24,19 @@
 	import { fetchMemories } from '$lib/trace/trace-fetch';
 	import MemoryFocus from '$lib/trace/MemoryFocus.svelte';
 	import { goto } from '$app/navigation';
+	import Dropdown, { type DropdownOption } from '$lib/components/Dropdown.svelte';
+	import type { OrcaRouterState, OrcaRouterModelsResponse } from '$types';
 	import type { VerifyState } from '$lib/trace/trace-pass';
 	import type { TraceLink } from '$lib/trace/trace-data';
 
-	type Lens = 'durable' | 'dream' | 'brief' | 'collect' | 'tools';
+	type Lens = 'durable' | 'dream' | 'brief' | 'collect' | 'tools' | 'verifier';
 	const LENSES: { key: Lens; label: string }[] = [
 		{ key: 'durable', label: 'what lasts' },
 		{ key: 'dream', label: 'dream now' },
 		{ key: 'brief', label: 'session brief' },
 		{ key: 'collect', label: 'collect (dry run)' },
-		{ key: 'tools', label: 'every tool' }
+		{ key: 'tools', label: 'every tool' },
+		{ key: 'verifier', label: 'verifier' }
 	];
 	/** Where each tool is live in the dashboard. */
 	const TOOL_HOME: Record<string, string> = {
@@ -88,6 +91,100 @@
 	let brief = $state<string | null>(null);
 	let collect = $state<{ candidateCount?: number; processed?: number } | null>(null);
 	let tools = $state<{ name: string; description: string }[]>([]);
+
+	// ── The verifier: OrcaRouter is the named provider behind the Stop hook.
+	// The key is write-only from here (it is stored in the hook's 0600 env
+	// file and never read back), and every model id in the dropdown comes
+	// from the live catalog the backend fetches — never from this file.
+	let verifier = $state<OrcaRouterState | null>(null);
+	let keyDraft = $state('');
+	let savingKey = $state(false);
+	let keyNote = $state<string | null>(null);
+	let catalog = $state<OrcaRouterModelsResponse | null>(null);
+	let loadingCatalog = $state(false);
+	let catalogError = $state<string | null>(null);
+	let catalogNote = $state<string | null>(null);
+	let chosenModel = $state('');
+	let savingModel = $state(false);
+
+	const modelOptions = $derived<DropdownOption[]>(
+		(catalog?.models ?? []).map((m) => ({
+			value: m.id,
+			label: m.label,
+			badge: m.supportsReasoning ? 'reasoning' : undefined
+		}))
+	);
+
+	async function loadVerifier() {
+		try {
+			verifier = await api.orcarouter.state();
+		} catch (e) {
+			catalogError = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	/**
+	 * Read the catalog the gateway serves this key. A failed read keeps the
+	 * last good list on screen and says why; it never invents a model.
+	 */
+	async function refreshCatalog() {
+		loadingCatalog = true;
+		catalogError = null;
+		catalogNote = null;
+		try {
+			const next = await api.orcarouter.models();
+			catalog = next;
+			// A model that disappeared from the catalog must not stay selected:
+			// the hook would then call an id the gateway no longer serves.
+			const ids = new Set(next.models.map((m) => m.id));
+			const preferred = verifier?.model ?? '';
+			if (chosenModel && !ids.has(chosenModel)) {
+				catalogNote = `${chosenModel} is no longer in the catalog; choose again.`;
+				chosenModel = '';
+			}
+			if (!chosenModel && ids.has(preferred)) chosenModel = preferred;
+			if (!chosenModel && ids.has('orcarouter/fusion')) chosenModel = 'orcarouter/fusion';
+			if (!chosenModel && next.models.length) chosenModel = next.models[0].id;
+		} catch (e) {
+			catalogError = e instanceof Error ? e.message : String(e);
+		} finally {
+			loadingCatalog = false;
+		}
+	}
+
+	async function saveKey() {
+		const draft = keyDraft.trim();
+		if (!draft || savingKey) return;
+		savingKey = true;
+		keyNote = null;
+		try {
+			const res = await api.orcarouter.storeKey(draft);
+			keyDraft = '';
+			verifier = await api.orcarouter.state();
+			keyNote = res.keyPresent
+				? 'Stored. The hook reads it from the env file; it is never shown again.'
+				: 'The key was not stored.';
+			if (res.keyPresent) await refreshCatalog();
+		} catch (e) {
+			keyNote = e instanceof Error ? e.message : String(e);
+		} finally {
+			savingKey = false;
+		}
+	}
+
+	async function saveModel(id: string) {
+		savingModel = true;
+		catalogNote = null;
+		try {
+			await api.orcarouter.chooseModel(id);
+			verifier = await api.orcarouter.state();
+			catalogNote = `The verifier now calls ${id}.`;
+		} catch (e) {
+			catalogNote = e instanceof Error ? e.message : String(e);
+		} finally {
+			savingModel = false;
+		}
+	}
 
 	const byId = $derived(new Map(river.map((m) => [m.id, m])));
 	let focusLinks = $state<TraceLink[]>([]);
@@ -166,9 +263,12 @@
 				river = [...full.values()];
 			} else if (next === 'collect') {
 				collect = await api.tool<{ candidateCount?: number; processed?: number }>('maintain', { action: 'gc', dry_run: true });
-			} else {
+			} else if (next === 'tools') {
 				const res = await api.tool<{ tools?: { name: string; description: string }[] }>('memory_status', { view: 'tools' });
 				tools = (res.tools ?? []).map((t) => ({ name: t.name, description: t.description }));
+			} else {
+				if (!verifier) await loadVerifier();
+				if (!catalog) await refreshCatalog();
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -226,6 +326,7 @@
 			error = e instanceof Error ? e.message : String(e);
 		}
 		loading = false;
+		void loadVerifier();
 		await run('durable');
 	});
 </script>
@@ -328,6 +429,83 @@
 			{collect.candidateCount ?? 0} memories would be collected{collect.processed ? ` of ${collect.processed} examined` : ''}.
 			Deletion is refused on Strata in 4.0; nothing was removed.
 		</p>
+	{:else if lens === 'verifier'}
+		<p class="tr-proof-kicker" use:alive={{ text: 'The verifier, and who answers it' }}></p>
+		{#if !verifier}
+			<p class="tr-note">Reading the Sanhedrin hook's settings…</p>
+		{:else}
+			<p class="tr-note">
+				OrcaRouter is the named provider behind this machine's Stop hook — one OpenAI-compatible
+				endpoint, {verifier.model ? `answering with ${verifier.model}` : 'with no model chosen yet'}. <a
+					class="tr-id" href={verifier.home} target="_blank" rel="noreferrer">orcarouter.ai</a
+				>
+			</p>
+			<p class="tr-proof-line" data-orcarouter-key-state={verifier.keyPresent ? 'present' : 'absent'}>
+				{#if verifier.keyPresent}
+					A key is present ({verifier.keySource === 'environment' ? 'from the environment' : 'in the env file'});
+					the hook reads it and the dashboard never does.
+				{:else}
+					No key yet. Paste one from orcarouter.ai: it goes straight into the hook's 0600 env file and is
+					never shown again.
+				{/if}
+			</p>
+			<input
+				class="tr-field"
+				type="password"
+				name="orcarouter-key"
+				aria-label="OrcaRouter API key"
+				autocomplete="off"
+				spellcheck="false"
+				placeholder="sk-orca-…"
+				bind:value={keyDraft}
+			/>
+			<div class="tr-actions">
+				<button type="button" class="tr-act alt" disabled={!keyDraft.trim() || savingKey} onclick={() => void saveKey()}>
+					{savingKey ? 'Storing…' : 'Store key'}
+				</button>
+				<button
+					type="button"
+					class="tr-act quiet"
+					disabled={!verifier.keyPresent || loadingCatalog}
+					onclick={() => void refreshCatalog()}
+				>
+					{loadingCatalog ? 'Reading catalog…' : 'Refresh catalog'}
+				</button>
+			</div>
+			{#if keyNote}<p class="tr-note">{keyNote}</p>{/if}
+			{#if catalogError}
+				<p class="tr-line tr-err">{catalogError}</p>
+			{:else if loadingCatalog && !catalog}
+				<p class="tr-proof-line">Reading the live catalog from {verifier.modelsUrl}…</p>
+			{:else if catalog && catalog.models.length === 0}
+				<p class="tr-line tr-warn">
+					The catalog answered with {catalog.catalogTotal ?? 0} models and none of them can answer a chat
+					completion. Nothing was written.
+				</p>
+			{:else if catalog}
+				<div class="orc-dd">
+					<Dropdown
+						label="verifier model"
+						placeholder="choose from the live catalog"
+						icon="sparkle"
+						options={modelOptions}
+						bind:value={chosenModel}
+						onChange={(id) => void saveModel(id)}
+					/>
+				</div>
+				<p class="tr-proof-line">
+					{catalog.total} of {catalog.catalogTotal ?? catalog.total} catalog models can answer this hook, read at{' '}
+					{when(catalog.fetchedAt)}.{#if savingModel} Saving…{/if}
+				</p>
+			{:else if !verifier.keyPresent}
+				<p class="tr-note">The catalog stays empty until a key is stored above.</p>
+			{/if}
+			{#if catalogNote}<p class="tr-note">{catalogNote}</p>{/if}
+			<p class="tr-note">
+				Only models the gateway itself lists are offered: nothing is typed by hand, and a choice is written
+				to {verifier.envPath} only after the catalog accepts it.
+			</p>
+		{/if}
 	{:else if lens === 'tools'}
 		<p class="tr-proof-kicker" use:alive={{ text: 'Every tool, and where it is live here' }}></p>
 		{#each tools as t (t.name)}
@@ -338,3 +516,32 @@
 		{/each}
 	{/if}
 </aside>
+
+<style>
+	/* The catalog dropdown fills the lane so its menu and trigger share the
+	   same right edge; long model ids ellipsize instead of widening it. */
+	.orc-dd {
+		width: 100%;
+		margin-top: 0.7rem;
+	}
+	.orc-dd :global(.dd) {
+		width: 100%;
+	}
+	.orc-dd :global(.dd-trigger) {
+		width: 100%;
+	}
+	/* The menu is exactly as wide as its trigger, so the panel and the list
+	   share one right edge; a long model id ellipsizes inside it. The panel
+	   paints an opaque surface of its own: the model list is the one place a
+	   reader picks a provider, and the lane behind it must not bleed through. */
+	.orc-dd :global(.dd-menu) {
+		width: 100%;
+		max-width: 100%;
+		box-sizing: border-box;
+		background: rgb(10, 10, 26);
+	}
+	.orc-dd :global(.dd-option),
+	.orc-dd :global(.dd-opt-label) {
+		min-width: 0;
+	}
+</style>

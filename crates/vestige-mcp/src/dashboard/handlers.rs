@@ -45,6 +45,17 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         self.status
     }
+
+    /// The stable `code` a page can branch on, when the refusal carries one.
+    /// The routers' tests read it; no handler needs it at runtime, because the
+    /// body is what the page receives.
+    #[cfg(test)]
+    pub(crate) fn code(&self) -> Option<&str> {
+        self.body
+            .as_ref()
+            .and_then(|body| body.get("code"))
+            .and_then(Value::as_str)
+    }
 }
 
 /// Compares the status alone, so a caller can still ask "was it a 404?".
@@ -74,7 +85,7 @@ const WITHHELD_CODES: [&str; 3] = [
 const NOT_IMPLEMENTED_SUFFIX: &str = " is not implemented by this backend";
 
 impl ApiError {
-    fn reason(status: StatusCode, code: &str, error: String) -> Self {
+    pub(crate) fn reason(status: StatusCode, code: &str, error: String) -> Self {
         Self {
             status,
             body: Some(serde_json::json!({ "error": error, "code": code })),
@@ -106,7 +117,7 @@ impl ApiError {
         ))
     }
 
-    fn internal(detail: &dyn std::fmt::Display) -> Self {
+    pub(crate) fn internal(detail: &dyn std::fmt::Display) -> Self {
         // The detail can name paths; it goes to the log, not the page.
         tracing::warn!(error = %detail, "dashboard request failed");
         Self::reason(

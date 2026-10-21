@@ -23,6 +23,10 @@ import type {
 	SanhedrinAppealResponse,
 	SanhedrinLatestResponse,
 	SanhedrinTelemetryResponse,
+	OrcaRouterState,
+	OrcaRouterModelsResponse,
+	OrcaRouterModelChoiceResponse,
+	OrcaRouterKeyResponse,
 	EmbeddingProfilesResponse,
 	EmbeddingProfileActionResponse
 } from '$types';
@@ -257,6 +261,24 @@ export const api = {
 			fetcher<SanhedrinAppealResponse>('/sanhedrin/appeal', {
 				method: 'POST',
 				body: JSON.stringify({ reason, note, claimId, receiptId })
+			})
+	},
+
+	// OrcaRouter: the verifier's named provider. The catalog is fetched by the
+	// backend (the page's CSP keeps fetches local) and the key never comes back.
+	orcarouter: {
+		state: () => fetcher<OrcaRouterState>('/orcarouter/state'),
+		models: () => fetcher<OrcaRouterModelsResponse>('/orcarouter/models'),
+		chooseModel: (model: string) =>
+			fetcher<OrcaRouterModelChoiceResponse>('/orcarouter/model', {
+				method: 'POST',
+				body: JSON.stringify({ model })
+			}),
+		/** Store a pasted key in the 0600 hook env file. It is never read back. */
+		storeKey: (key: string) =>
+			fetcher<OrcaRouterKeyResponse>('/orcarouter/key', {
+				method: 'POST',
+				body: JSON.stringify({ key })
 			})
 	},
 

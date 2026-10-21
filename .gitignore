@@ -162,3 +162,7 @@ docs/business/
 
 # Operator Lite test_destructive.py throwaway homes (removed at the end of a run)
 /operator-lite/oplite-destructive-*/
+
+# Generated UI evidence for a provider integration: produced by
+# `make orcarouter-evidence` at review time, never committed.
+/orca-evidence/

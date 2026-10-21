@@ -12,7 +12,7 @@ load_vestige_sanhedrin_env() {
   command -v python3 >/dev/null 2>&1 || return 0
   while IFS="$(printf '\t')" read -r key value; do
     case "$key" in
-      VESTIGE_SANHEDRIN_ENABLED|VESTIGE_SANHEDRIN_MODEL|VESTIGE_SANHEDRIN_ENDPOINT|VESTIGE_SANHEDRIN_BACKEND|VESTIGE_SANHEDRIN_CLAIM_MODE|VESTIGE_SANHEDRIN_OUTPUT|VESTIGE_SANHEDRIN_PYTHON|VESTIGE_DASHBOARD_PORT)
+      VESTIGE_SANHEDRIN_ENABLED|VESTIGE_SANHEDRIN_MODEL|VESTIGE_SANHEDRIN_ENDPOINT|VESTIGE_SANHEDRIN_API_KEY|VESTIGE_SANHEDRIN_BACKEND|VESTIGE_SANHEDRIN_CLAIM_MODE|VESTIGE_SANHEDRIN_OUTPUT|VESTIGE_SANHEDRIN_PYTHON|VESTIGE_SANHEDRIN_ALLOW_LOOSE_LEDGER|VESTIGE_DASHBOARD_PORT)
         export "$key=$value"
         ;;
     esac
@@ -24,10 +24,12 @@ allowed = {
     "VESTIGE_SANHEDRIN_ENABLED",
     "VESTIGE_SANHEDRIN_MODEL",
     "VESTIGE_SANHEDRIN_ENDPOINT",
+    "VESTIGE_SANHEDRIN_API_KEY",
     "VESTIGE_SANHEDRIN_BACKEND",
     "VESTIGE_SANHEDRIN_CLAIM_MODE",
     "VESTIGE_SANHEDRIN_OUTPUT",
     "VESTIGE_SANHEDRIN_PYTHON",
+    "VESTIGE_SANHEDRIN_ALLOW_LOOSE_LEDGER",
     "VESTIGE_DASHBOARD_PORT",
 }
 
@@ -86,6 +88,14 @@ SANHEDRIN_MODELS_URL=""
 [ -n "$SANHEDRIN_ENDPOINT" ] && SANHEDRIN_MODELS_URL="${SANHEDRIN_ENDPOINT%/chat/completions}/models"
 SANHEDRIN_CLAIM_MODE="${VESTIGE_SANHEDRIN_CLAIM_MODE:-0}"
 SANHEDRIN_OUTPUT="${VESTIGE_SANHEDRIN_OUTPUT:-text}"
+# Hosted providers (OrcaRouter, OpenAI, ...) reject an unauthenticated model
+# probe. Build the header as an argv array so the key never lands in the
+# command text a shell would echo back.
+SANHEDRIN_API_KEY="${VESTIGE_SANHEDRIN_API_KEY:-}"
+SANHEDRIN_AUTH_ARGS=()
+if [ -n "$SANHEDRIN_API_KEY" ]; then
+  SANHEDRIN_AUTH_ARGS=(-H "Authorization: Bearer ${SANHEDRIN_API_KEY}")
+fi
 
 echo "Vestige Cognitive Sandwich — Prereq Check"
 echo
@@ -185,7 +195,7 @@ if [ "$CHECK_SANHEDRIN" -eq 1 ]; then
 
   if [ -z "$SANHEDRIN_MODELS_URL" ]; then
     warn "Sanhedrin endpoint/model not configured yet; hook will fail open until configured"
-  elif curl -fsS -m 2 "$SANHEDRIN_MODELS_URL" >/dev/null 2>&1; then
+  elif curl -fsS -m 2 ${SANHEDRIN_AUTH_ARGS[@]+"${SANHEDRIN_AUTH_ARGS[@]}"} "$SANHEDRIN_MODELS_URL" >/dev/null 2>&1; then
     ok "Sanhedrin model endpoint responding at $SANHEDRIN_MODELS_URL"
   else
     warn "Sanhedrin endpoint not responding at $SANHEDRIN_MODELS_URL"

@@ -173,6 +173,49 @@ user. Backend-specific payload extensions are enabled only by
 `VESTIGE_SANHEDRIN_API_KEY`; Sanhedrin intentionally does not forward a generic
 `OPENAI_API_KEY` to arbitrary configured endpoints.
 
+#### OrcaRouter, a named preset
+
+[OrcaRouter](https://www.orcarouter.ai) is a named preset
+(`--sanhedrin-provider=orcarouter`) rather than a hand-typed endpoint. It is an
+OpenAI-compatible AI gateway that routes many providers behind one endpoint
+(`https://api.orcarouter.ai/v1`), so a verifier install keeps one key and one
+URL. The installer writes the endpoint, the backend label and the default model
+`orcarouter/fusion`; only the key is yours to add.
+
+```bash
+vestige sandwich install --enable-sanhedrin --sanhedrin-provider=orcarouter
+
+# Then export the key the hook reads (never taken from OPENAI_API_KEY):
+export VESTIGE_SANHEDRIN_API_KEY="sk-orca-…"
+```
+
+Model choice is not a text field. The dashboard's **System → verifier** lens
+reads `GET https://api.orcarouter.ai/v1/models?capability=chat` through the
+local backend (the page's CSP keeps the browser from calling the gateway
+directly), filters to the entries that advertise a chat endpoint type, and
+writes a model only after the catalog accepts it. The same lens stores a pasted
+key into
+`~/.claude/hooks/vestige-sanhedrin.env` (mode `0600`); the key is written once
+and never read back by the dashboard, and a value without the `sk-orca-` prefix
+is refused instead of saved.
+
+The catalog a key reads is the set the gateway lists for that key; access to a
+given model is per key. A model the key may list but not call answers
+`model_access_denied` at verification time, where Sanhedrin fails open and
+records the reason, so widen the key's model scope in the OrcaRouter console
+rather than editing the env file by hand.
+
+OrcaRouter also runs gateway-level, zero-trust security for AI agents on the
+same endpoint — screening every prompt/response and governing every tool call
+on a default-deny basis, with no application code changes.
+
+Verification is a general chat task, so the default verifier model is a general
+one. OrcaRouter's separately gated Security Research tier adds Cyber models
+(`orca/orcacyber-zero-1.5`, `orca/orcacyber-ultra-1.0`) for authorized security
+work; a key without that grant does not see them in the catalog this lens reads,
+and a direct call answers `403` (the gateway names the reason, for example
+`block_key_scope`), so the lens offers only what the key can actually call.
+
 ### Prerequisites
 
 | Tool | Install |
@@ -234,6 +277,7 @@ On M3 Max 14-core or M2/M1 Max: closer to 3–7s prompt processing, ~50–60 tok
 | `VESTIGE_DASHBOARD_PORT` | `3927` | Vestige MCP HTTP API port used by hooks |
 | `VESTIGE_SANHEDRIN_ENDPOINT` | unset | OpenAI-compatible chat completions endpoint for Sanhedrin |
 | `VESTIGE_SANHEDRIN_MODEL` | unset | Model name sent to the Sanhedrin endpoint; choose any compatible model |
+| `VESTIGE_SANHEDRIN_API_KEY` | unset | Bearer key for a hosted Sanhedrin endpoint; OrcaRouter keys start with `sk-orca-` |
 | `VESTIGE_SANHEDRIN_BACKEND` | unset | Optional backend hint (`ollama`, `llama.cpp`, `mlx`, `vllm`, `openai`, `litellm`) |
 | `VESTIGE_SANHEDRIN_CLAIM_MODE` | `1` when installed with `--enable-sanhedrin` | Enables per-claim retrieval and fail-closed user-critical lanes |
 | `VESTIGE_SANHEDRIN_OUTPUT` | `json` when installed with `--enable-sanhedrin` | Emits structured JSON from the bridge; shell hook also accepts legacy text |

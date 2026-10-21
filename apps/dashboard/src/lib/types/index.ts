@@ -406,6 +406,46 @@ export interface SanhedrinTelemetryResponse {
 	daily: SanhedrinDailyTelemetry[];
 }
 
+// OrcaRouter — the Sanhedrin verifier's named provider. The catalog is the
+// only source of model ids; nothing here may be hand-written into a dropdown.
+export interface OrcaRouterState {
+	configured: boolean;
+	endpoint: string;
+	model: string | null;
+	backend: string;
+	keyPresent: boolean;
+	keySource: 'environment' | 'env_file' | null;
+	home: string;
+	envPath: string;
+	modelsUrl: string;
+}
+
+export interface OrcaRouterModel {
+	id: string;
+	label: string;
+	ownedBy: string | null;
+	contextLength: number | null;
+	supportsReasoning: boolean;
+}
+
+export interface OrcaRouterModelsResponse {
+	models: OrcaRouterModel[];
+	total: number;
+	catalogTotal: number | null;
+	source: string;
+	fetchedAt: string;
+}
+
+export interface OrcaRouterModelChoiceResponse {
+	model: string;
+	saved: boolean;
+}
+
+export interface OrcaRouterKeyResponse {
+	keyPresent: boolean;
+	keySource: 'environment' | 'env_file' | null;
+}
+
 // Intentions (prospective memory)
 export interface IntentionItem {
 	id: string;

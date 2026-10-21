@@ -22,6 +22,7 @@ pub mod protocol;
 mod protocol_stdio_store;
 pub mod resources;
 pub mod rules_hook;
+pub mod sanhedrin_env;
 pub mod server;
 pub mod strata_memory;
 pub mod tools;

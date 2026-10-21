@@ -88,6 +88,23 @@
         "VESTIGE_SANHEDRIN_TIMEOUT": "45"
       }
     },
+    "orcarouter": {
+      "label": "OrcaRouter (OpenAI-compatible gateway)",
+      "tier": "hosted",
+      "bestFor": "Users who want one hosted endpoint that routes many providers, with gateway-level screening on the same endpoint",
+      "setup": "Create an OrcaRouter key at https://www.orcarouter.ai, export it as VESTIGE_SANHEDRIN_API_KEY (keys start with sk-orca-), then list the live catalog at https://api.orcarouter.ai/v1/models?capability=chat and pick any model id it returns.",
+      "tradeoffs": [
+        "one key and one endpoint for many providers",
+        "routing happens upstream, so the verifier model can change without reinstalling"
+      ],
+      "requires": "VESTIGE_SANHEDRIN_API_KEY exported in the hook environment (sk-orca- prefix) and a model id returned by GET https://api.orcarouter.ai/v1/models?capability=chat",
+      "env": {
+        "VESTIGE_SANHEDRIN_ENDPOINT": "https://api.orcarouter.ai/v1/chat/completions",
+        "VESTIGE_SANHEDRIN_MODEL": "orcarouter/fusion",
+        "VESTIGE_SANHEDRIN_BACKEND": "openai",
+        "VESTIGE_SANHEDRIN_TIMEOUT": "45"
+      }
+    },
     "anthropic-via-litellm": {
       "label": "Anthropic through LiteLLM OpenAI-compatible proxy",
       "bestFor": "Claude users who already run LiteLLM",

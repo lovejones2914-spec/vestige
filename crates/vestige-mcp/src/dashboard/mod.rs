@@ -7,6 +7,7 @@
 
 pub mod events;
 pub mod handlers;
+pub mod orcarouter;
 pub mod state;
 pub mod static_files;
 pub mod websocket;
@@ -181,6 +182,25 @@ fn build_guarded_router(state: AppState, guard: AccessGuard) -> (Router, AppStat
             get(handlers::get_sanhedrin_telemetry),
         )
         .route("/api/sanhedrin/appeal", post(handlers::appeal_sanhedrin))
+        // OrcaRouter: the verifier's named provider. The catalog is fetched
+        // here because the page's CSP keeps `connect-src` on this origin, and
+        // the key never leaves this machine.
+        .route(
+            "/api/orcarouter/state",
+            get(orcarouter::get_orcarouter_state),
+        )
+        .route(
+            "/api/orcarouter/key",
+            post(orcarouter::store_orcarouter_key),
+        )
+        .route(
+            "/api/orcarouter/models",
+            get(orcarouter::get_orcarouter_models),
+        )
+        .route(
+            "/api/orcarouter/model",
+            post(orcarouter::choose_orcarouter_model),
+        )
         // ============================================================
         // AGENT BLACK BOX (v2.2) — replayable agent-run traces
         // ============================================================

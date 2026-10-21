@@ -6,6 +6,7 @@
 #   # or, from a checkout / source archive:
 #   ./scripts/install-sandwich.sh [--force] [--enable-preflight] [--enable-sanhedrin] [--with-launchd] [--include-memory-loader]
 #   ./scripts/install-sandwich.sh --enable-sanhedrin --sanhedrin-endpoint=http://127.0.0.1:11434/v1/chat/completions --sanhedrin-model=qwen2.5:14b
+#   ./scripts/install-sandwich.sh --enable-sanhedrin --orcarouter   # named OrcaRouter provider
 #
 # What it does:
 #   1. Verifies required local tools
@@ -14,6 +15,9 @@
 #   4. Removes old Vestige hook wiring from ~/.claude/settings.json by default
 #   5. Optionally enables preflight hooks and/or Sanhedrin. Only with --with-launchd on Apple Silicon,
 #      auto-starts mlx_lm.server with Qwen3.6-35B-A3B
+#
+# The verifier API key is never written here: export VESTIGE_SANHEDRIN_API_KEY
+# in the hook environment (OrcaRouter keys start with sk-orca-).
 
 set -euo pipefail
 
@@ -27,16 +31,19 @@ SANHEDRIN_MODELS_URL=""
 [ -n "$SANHEDRIN_ENDPOINT" ] && SANHEDRIN_MODELS_URL="${SANHEDRIN_ENDPOINT%/chat/completions}/models"
 SANHEDRIN_CLAIM_MODE="${VESTIGE_SANHEDRIN_CLAIM_MODE:-1}"
 SANHEDRIN_OUTPUT="${VESTIGE_SANHEDRIN_OUTPUT:-json}"
+SANHEDRIN_BACKEND="${VESTIGE_SANHEDRIN_BACKEND:-}"
 MODEL_ID_FROM_INSTALLER=0
 DASHBOARD_PORT_FROM_INSTALLER=0
 SANHEDRIN_ENDPOINT_FROM_INSTALLER=0
 SANHEDRIN_CLAIM_MODE_FROM_INSTALLER=0
 SANHEDRIN_OUTPUT_FROM_INSTALLER=0
+SANHEDRIN_BACKEND_FROM_INSTALLER=0
 [ -n "${VESTIGE_SANHEDRIN_MODEL:-${VESTIGE_SANDWICH_MODEL:-}}" ] && MODEL_ID_FROM_INSTALLER=1
 [ -n "${VESTIGE_DASHBOARD_PORT:-}" ] && DASHBOARD_PORT_FROM_INSTALLER=1
 [ -n "${VESTIGE_SANHEDRIN_ENDPOINT:-${MLX_ENDPOINT:-}}" ] && SANHEDRIN_ENDPOINT_FROM_INSTALLER=1
 [ -n "${VESTIGE_SANHEDRIN_CLAIM_MODE:-}" ] && SANHEDRIN_CLAIM_MODE_FROM_INSTALLER=1
 [ -n "${VESTIGE_SANHEDRIN_OUTPUT:-}" ] && SANHEDRIN_OUTPUT_FROM_INSTALLER=1
+[ -n "${VESTIGE_SANHEDRIN_BACKEND:-}" ] && SANHEDRIN_BACKEND_FROM_INSTALLER=1
 
 HOOKS_DIR="$HOME/.claude/hooks"
 AGENTS_DIR="$HOME/.claude/agents"
@@ -69,9 +76,27 @@ for arg in "$@"; do
       MODEL_ID="${arg#*=}"
       MODEL_ID_FROM_INSTALLER=1
       ;;
+    --sanhedrin-backend=*|--backend=*)
+      SANHEDRIN_BACKEND="${arg#*=}"
+      SANHEDRIN_BACKEND_FROM_INSTALLER=1
+      ;;
+    --sanhedrin-provider=orcarouter|--orcarouter)
+      # Named provider: OrcaRouter is an OpenAI-compatible gateway, so the
+      # hook talks to it through its own backend label and its own endpoint.
+      SANHEDRIN_ENDPOINT="https://api.orcarouter.ai/v1/chat/completions"
+      SANHEDRIN_MODELS_URL="${SANHEDRIN_ENDPOINT%/chat/completions}/models"
+      SANHEDRIN_ENDPOINT_FROM_INSTALLER=1
+      SANHEDRIN_BACKEND="openai"
+      SANHEDRIN_BACKEND_FROM_INSTALLER=1
+      ENABLE_SANHEDRIN=1
+      if [ "$MODEL_ID_FROM_INSTALLER" -eq 0 ]; then
+        MODEL_ID="orcarouter/fusion"
+        MODEL_ID_FROM_INSTALLER=1
+      fi
+      ;;
     --src=*) SRC="${arg#--src=}" ;;
     -h|--help)
-      sed -n '2,24p' "$0"
+      sed -n '2,20p' "$0"
       exit 0
       ;;
   esac
@@ -251,6 +276,7 @@ if [ "$ENABLE_SANHEDRIN" -eq 1 ]; then
   INSTALLER_SANHEDRIN_ENDPOINT="$SANHEDRIN_ENDPOINT"
   INSTALLER_SANHEDRIN_CLAIM_MODE="$SANHEDRIN_CLAIM_MODE"
   INSTALLER_SANHEDRIN_OUTPUT="$SANHEDRIN_OUTPUT"
+  INSTALLER_SANHEDRIN_BACKEND="$SANHEDRIN_BACKEND"
   if [ -f "$SANHEDRIN_ENV" ]; then
     load_vestige_sanhedrin_env "$SANHEDRIN_ENV" || true
     if [ "$MODEL_ID_FROM_INSTALLER" -eq 1 ]; then
@@ -281,6 +307,11 @@ if [ "$ENABLE_SANHEDRIN" -eq 1 ]; then
     else
       SANHEDRIN_OUTPUT="${VESTIGE_SANHEDRIN_OUTPUT:-$SANHEDRIN_OUTPUT}"
     fi
+    if [ "$SANHEDRIN_BACKEND_FROM_INSTALLER" -eq 1 ]; then
+      SANHEDRIN_BACKEND="$INSTALLER_SANHEDRIN_BACKEND"
+    else
+      SANHEDRIN_BACKEND="${VESTIGE_SANHEDRIN_BACKEND:-$SANHEDRIN_BACKEND}"
+    fi
   fi
   if [ "$WITH_LAUNCHD" -eq 0 ] \
     && [ "$MODEL_ID_FROM_INSTALLER" -eq 0 ] \
@@ -294,9 +325,17 @@ if [ "$ENABLE_SANHEDRIN" -eq 1 ]; then
   fi
   TMP_ENV="$(mktemp)"
   if [ -f "$SANHEDRIN_ENV" ]; then
-    awk -F= '
-      $1 !~ /^(VESTIGE_SANHEDRIN_ENABLED|VESTIGE_SANHEDRIN_ENDPOINT|VESTIGE_SANHEDRIN_MODEL|VESTIGE_DASHBOARD_PORT|VESTIGE_SANHEDRIN_CLAIM_MODE|VESTIGE_SANHEDRIN_OUTPUT)$/
-    ' "$SANHEDRIN_ENV" > "$TMP_ENV"
+    if [ -n "$SANHEDRIN_BACKEND" ]; then
+      # A backend label was supplied (for example by --orcarouter): replace it.
+      awk -F= '
+        $1 !~ /^(VESTIGE_SANHEDRIN_ENABLED|VESTIGE_SANHEDRIN_ENDPOINT|VESTIGE_SANHEDRIN_MODEL|VESTIGE_DASHBOARD_PORT|VESTIGE_SANHEDRIN_CLAIM_MODE|VESTIGE_SANHEDRIN_OUTPUT|VESTIGE_SANHEDRIN_BACKEND)$/
+      ' "$SANHEDRIN_ENV" > "$TMP_ENV"
+    else
+      # No backend supplied: keep whatever the existing file already had.
+      awk -F= '
+        $1 !~ /^(VESTIGE_SANHEDRIN_ENABLED|VESTIGE_SANHEDRIN_ENDPOINT|VESTIGE_SANHEDRIN_MODEL|VESTIGE_DASHBOARD_PORT|VESTIGE_SANHEDRIN_CLAIM_MODE|VESTIGE_SANHEDRIN_OUTPUT)$/
+      ' "$SANHEDRIN_ENV" > "$TMP_ENV"
+    fi
   fi
   {
     cat "$TMP_ENV"
@@ -306,6 +345,9 @@ if [ "$ENABLE_SANHEDRIN" -eq 1 ]; then
     printf 'VESTIGE_DASHBOARD_PORT=%s\n' "$(quote_env "$DASHBOARD_PORT")"
     printf 'VESTIGE_SANHEDRIN_CLAIM_MODE=%s\n' "$(quote_env "$SANHEDRIN_CLAIM_MODE")"
     printf 'VESTIGE_SANHEDRIN_OUTPUT=%s\n' "$(quote_env "$SANHEDRIN_OUTPUT")"
+    if [ -n "$SANHEDRIN_BACKEND" ]; then
+      printf 'VESTIGE_SANHEDRIN_BACKEND=%s\n' "$(quote_env "$SANHEDRIN_BACKEND")"
+    fi
   } > "$SANHEDRIN_ENV"
   rm -f "$TMP_ENV"
   chmod 0600 "$SANHEDRIN_ENV"

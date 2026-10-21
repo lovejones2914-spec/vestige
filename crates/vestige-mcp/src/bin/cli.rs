@@ -28,6 +28,10 @@ use vestige_core::{
     ConnectionRecord, IngestInput, PortableImportMode, SecretConfidence, SourceEnvelope,
     SourceUpsertOutcome, Storage, scan_secrets,
 };
+use vestige_mcp::sanhedrin_env::{
+    ORCAROUTER_BACKEND, ORCAROUTER_CHAT_ENDPOINT, ORCAROUTER_DEFAULT_MODEL, ORCAROUTER_KEY_ENV,
+    write_provider,
+};
 
 /// Vestige - Causal Proof Engine CLI
 #[derive(Parser)]
@@ -86,6 +90,16 @@ struct SandwichInstallOptions {
     /// Model name passed to the optional Sanhedrin endpoint.
     #[arg(long, value_name = "MODEL")]
     sanhedrin_model: Option<String>,
+
+    /// Named hosted verifier provider. `orcarouter` configures OrcaRouter's own
+    /// endpoint, backend, and default model; the API key still comes from
+    /// VESTIGE_SANHEDRIN_API_KEY in the hook environment.
+    #[arg(long, value_name = "PROVIDER")]
+    sanhedrin_provider: Option<String>,
+
+    /// Shorthand for `--sanhedrin-provider orcarouter --enable-sanhedrin`.
+    #[arg(long)]
+    orcarouter: bool,
 
     /// Use a local checkout/release root containing hooks/ and agents/.
     #[arg(long, value_name = "DIR", hide = true)]
@@ -1321,36 +1335,10 @@ fn copy_companion_files(
     Ok((copied, skipped))
 }
 
-fn quote_shell_env(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn write_sanhedrin_env(
-    hooks_dir: &Path,
-    endpoint: &str,
-    model: &str,
-    dashboard_port: &str,
-) -> anyhow::Result<()> {
-    let env_path = hooks_dir.join("vestige-sanhedrin.env");
-    let contents = format!(
-        "VESTIGE_SANHEDRIN_ENABLED=1\nVESTIGE_SANHEDRIN_ENDPOINT={}\nVESTIGE_SANHEDRIN_MODEL={}\nVESTIGE_DASHBOARD_PORT={}\nVESTIGE_SANHEDRIN_CLAIM_MODE=1\nVESTIGE_SANHEDRIN_OUTPUT=json\n",
-        quote_shell_env(endpoint),
-        quote_shell_env(model),
-        quote_shell_env(dashboard_port)
-    );
-    fs::write(&env_path, contents)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&env_path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&env_path, perms)?;
-    }
-
-    println!("{}: {}", "Sanhedrin env".white().bold(), env_path.display());
-    Ok(())
-}
+// OrcaRouter is a named provider with its own endpoint and backend label, so a
+// provider choice never degrades into a free-form base-URL field. The endpoint,
+// default model, backend and key contract live in `vestige_mcp::sanhedrin_env`,
+// which the dashboard reads too; see the imports at the top of this file.
 
 fn install_launchd_job(source_root: &Path, home: &Path, model: &str) -> anyhow::Result<()> {
     let launchd_dir = home.join("Library").join("LaunchAgents");
@@ -1487,6 +1475,20 @@ fn install_sandwich_from_source(
         options.enable_sanhedrin || options.enable_sandwich || options.with_launchd;
     let mut with_launchd = options.with_launchd;
 
+    // A named provider is a first-class choice, not a custom base URL: it
+    // enables the layer and pins OrcaRouter's own endpoint and backend label.
+    let orcarouter = options.orcarouter
+        || match options.sanhedrin_provider.as_deref() {
+            None => false,
+            Some(name) if name.eq_ignore_ascii_case("orcarouter") => true,
+            Some(other) => anyhow::bail!(
+                "unknown --sanhedrin-provider '{other}'; the named providers are: orcarouter"
+            ),
+        };
+    if orcarouter {
+        enable_sanhedrin = true;
+    }
+
     if with_launchd && (env::consts::OS != "macos" || env::consts::ARCH != "aarch64") {
         println!(
             "{}",
@@ -1556,6 +1558,16 @@ fn install_sandwich_from_source(
         .or_else(|| env::var("VESTIGE_SANHEDRIN_MODEL").ok())
         .or_else(|| env::var("VESTIGE_SANDWICH_MODEL").ok())
         .unwrap_or_default();
+    let mut backend = env::var("VESTIGE_SANHEDRIN_BACKEND").unwrap_or_default();
+    if orcarouter {
+        if options.sanhedrin_endpoint.is_none() {
+            endpoint = ORCAROUTER_CHAT_ENDPOINT.to_string();
+        }
+        if model.is_empty() {
+            model = ORCAROUTER_DEFAULT_MODEL.to_string();
+        }
+        backend = ORCAROUTER_BACKEND.to_string();
+    }
     if with_launchd {
         if endpoint.is_empty() {
             endpoint = "http://127.0.0.1:8080/v1/chat/completions".to_string();
@@ -1566,6 +1578,22 @@ fn install_sandwich_from_source(
     }
 
     if enable_sanhedrin {
+        if orcarouter {
+            println!(
+                "{}: {} (model {}, backend {})",
+                "Sanhedrin provider".white().bold(),
+                endpoint,
+                model,
+                backend
+            );
+            if env::var(ORCAROUTER_KEY_ENV).is_err() {
+                println!(
+                    "{}",
+                    "OrcaRouter needs VESTIGE_SANHEDRIN_API_KEY exported in the hook environment; keys start with sk-orca-. It is read at hook time and never written to disk here."
+                        .yellow()
+                );
+            }
+        }
         if endpoint.is_empty() || model.is_empty() {
             println!(
                 "{}",
@@ -1573,7 +1601,19 @@ fn install_sandwich_from_source(
                     .yellow()
             );
         }
-        write_sanhedrin_env(&hooks_dir, &endpoint, &model, &dashboard_port)?;
+        write_provider(
+            &hooks_dir.join("vestige-sanhedrin.env"),
+            &endpoint,
+            &model,
+            &backend,
+            &dashboard_port,
+        )
+        .with_context(|| "failed to write the Sanhedrin env file".to_string())?;
+        println!(
+            "{}: {}",
+            "Sanhedrin env".white().bold(),
+            hooks_dir.join("vestige-sanhedrin.env").display()
+        );
     }
     if with_launchd {
         install_launchd_job(&source_root, &home, &model)?;

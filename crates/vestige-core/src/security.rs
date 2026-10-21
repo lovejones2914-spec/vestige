@@ -53,6 +53,7 @@ pub enum SecretKind {
     AzureClientSecret,
     AnthropicApiKey,
     OpenAiApiKey,
+    OrcaRouterApiKey,
     StripeLiveKey,
     HighEntropyCandidate,
 }
@@ -69,6 +70,7 @@ impl SecretKind {
             Self::AzureClientSecret => "Azure client secret",
             Self::AnthropicApiKey => "Anthropic API key",
             Self::OpenAiApiKey => "OpenAI API key",
+            Self::OrcaRouterApiKey => "OrcaRouter API key",
             Self::StripeLiveKey => "Stripe live key",
             Self::HighEntropyCandidate => "high-entropy credential candidate",
         }
@@ -219,6 +221,19 @@ pub fn scan_secrets(content: &str) -> Vec<SecretFinding> {
         );
     }
 
+    // OrcaRouter keys carry a provider-specific `sk-orca-` prefix, so the
+    // prefix alone identifies them: a long URL-safe run after it is the key.
+    // This runs before the generic `sk-` rules so the finding names the
+    // provider instead of falling through to the OpenAI bucket.
+    for value in orcarouter_key_runs(content) {
+        push_finding(
+            &mut findings,
+            SecretKind::OrcaRouterApiKey,
+            SecretConfidence::Blocking,
+            value,
+        );
+    }
+
     // OpenAI project and service-account keys carry a named prefix. The
     // legacy form is `sk-` plus exactly 48 alphanumerics.
     for prefix in ["sk-proj-", "sk-svcacct-", "sk-admin-"] {
@@ -339,6 +354,14 @@ fn min_prefixed_runs<'a>(
             (run.len() >= min_len && has_mixed_classes(run)).then_some(&content[start..end])
         })
         .collect()
+}
+
+/// `sk-orca-` followed by a long URL-safe run. OrcaRouter keys mix lower
+/// case, upper case and digits; a slug that merely starts with the prefix
+/// (`sk-orca-model-routing-notes`) does not. A prefix that continues an
+/// identifier is not a token start.
+fn orcarouter_key_runs(content: &str) -> Vec<&str> {
+    min_prefixed_runs(content, "sk-orca-", 32, is_urlsafe_key_char)
 }
 
 fn is_alphanumeric(byte: u8) -> bool {
@@ -647,6 +670,53 @@ mod tests {
         for token in [&anthropic, &openai_project, &openai_legacy, &stripe] {
             assert!(!format!("{findings:?}").contains(token.as_str()));
         }
+    }
+
+    #[test]
+    fn finds_orcarouter_keys_by_their_own_prefix() {
+        // Obviously fake body: a repeated three-character pattern.
+        let key = format!("sk-orca-{}", "aB3".repeat(14));
+        let findings = scan_secrets(&format!(
+            "VESTIGE_SANHEDRIN_API_KEY={key}\nnote: rotate the OrcaRouter key"
+        ));
+
+        let count = findings
+            .iter()
+            .filter(|finding| finding.kind == SecretKind::OrcaRouterApiKey)
+            .count();
+        assert_eq!(count, 1, "{findings:?}");
+        assert_eq!(SecretKind::OrcaRouterApiKey.as_str(), "OrcaRouter API key");
+        assert!(
+            findings
+                .iter()
+                .filter(|finding| finding.kind == SecretKind::OrcaRouterApiKey)
+                .all(SecretFinding::blocks_ingestion)
+        );
+        // The value itself is never retained.
+        assert!(!format!("{findings:?}").contains(key.as_str()));
+        // …and it is not double-reported as an OpenAI key.
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.kind != SecretKind::OpenAiApiKey),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn orcarouter_lookalikes_are_not_blocked() {
+        let findings = scan_secrets(concat!(
+            "slug: sk-orca-model-routing-notes\n",
+            "prose: set the sk-orca- key in the hook environment\n",
+            "short: sk-orca-aB3\n",
+            "host: https://api.orcarouter.ai/v1/chat/completions\n",
+        ));
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.kind != SecretKind::OrcaRouterApiKey),
+            "{findings:?}"
+        );
     }
 
     #[test]
